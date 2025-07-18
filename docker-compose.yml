@@ -1,0 +1,136 @@
+services:
+  spark-master:
+    build: .
+    container_name: spark-master
+    command: ["/opt/bitnami/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    environment:
+      - SPARK_MODE=master
+      - JAVA_HOME=/opt/bitnami/java
+      - PATH=/opt/bitnami/java/bin:/opt/bitnami/spark/bin:$PATH
+      - SPARK_LOG_LEVEL=INFO
+      - SPARK_DAEMON_JAVA_OPTS=-Dspark.deploy.recoveryMode=FILESYSTEM -Dspark.deploy.recoveryDirectory=/tmp/spark
+    ports:
+      - "8080:8080"   # Spark master web UI
+      - "7077:7077"   # Spark master port
+    networks:
+      - spark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.00'
+          memory: 2G
+
+  spark-worker:
+    build: .
+    container_name: spark-worker
+    command: ["/opt/bitnami/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=3
+      - SPARK_WORKER_DIR=/opt/bitnami/spark/work
+      - SPARK_WORKER_WEBUI_PORT=8081
+      - JAVA_HOME=/opt/bitnami/java
+      - PATH=/opt/bitnami/java/bin:/opt/bitnami/spark/bin:$PATH
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"   # Spark worker web UI
+    volumes:
+      - spark-work:/opt/bitnami/spark/work
+    networks:
+      - spark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.00'
+          memory: 2G
+
+  spark-history-server:
+    image: bitnami/spark:latest
+    container_name: spark-history-server
+    command: ["/opt/bitnami/spark/bin/spark-class", "org.apache.spark.deploy.history.HistoryServer"]
+    environment:
+      - JAVA_HOME=/opt/bitnami/java
+      - PATH=/opt/bitnami/java/bin:/opt/bitnami/spark/bin:$PATH
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/tmp/spark-events
+    ports:
+      - "18080:18080" # Spark History Server UI
+    volumes:
+      - spark-events:/tmp/spark-events
+    networks:
+      - spark-net
+    depends_on:
+      - spark-master
+
+  jupyter:
+    image: jupyter/all-spark-notebook:latest
+    container_name: jupyter
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - SPARK_MASTER=spark://spark-master:7077
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+      - PYTHONPATH=/home/jovyan/pyspark_cluster:$PYTHONPATH  # Match Spark PYTHONPATH
+    ports:
+      - "8888:8888" # Jupyter Lab
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data
+      - ./pyspark_cluster:/home/jovyan/pyspark_cluster  # Mount project code
+      - ./requirements.txt:/home/jovyan/requirements.txt  # Mount requirements
+    networks:
+      - spark-net
+    depends_on:
+      - spark-master
+      - spark-worker
+
+  # postgresql:
+  #   image: postgres:15
+  #   container_name: postgres
+  #   environment:
+  #     - POSTGRES_USER=sparkuser
+  #     - POSTGRES_PASSWORD=sparkpass
+  #     - POSTGRES_DB=sparkdb
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   networks:
+  #     - spark-net
+
+  # minio:
+  #   image: minio/minio:latest
+  #   container_name: minio
+  #   environment:
+  #     - MINIO_ROOT_USER=minio
+  #     - MINIO_ROOT_PASSWORD=minio123
+  #   command: server /data
+  #   ports:
+  #     - "9000:9000"
+  #     - "9001:9001"
+  #   volumes:
+  #     - minio-data:/data
+  #   networks:
+  #     - spark-net
+
+networks:
+  spark-net:
+    driver: bridge
+
+volumes:
+  spark-work:
+  spark-events:
+  # pgdata:
+  # minio-data: 

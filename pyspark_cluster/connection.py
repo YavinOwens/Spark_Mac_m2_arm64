@@ -5,6 +5,7 @@ from pyspark.sql import SparkSession
 from pyspark import SparkContext
 import os
 import logging
+import sys
 
 # Suppress Spark logging
 logging.getLogger("py4j").setLevel(logging.ERROR)
@@ -14,9 +15,32 @@ logging.getLogger("org.apache.hadoop").setLevel(logging.ERROR)
 logging.getLogger("org.apache.hadoop.util.NativeCodeLoader").setLevel(logging.ERROR)
 logging.getLogger("org.apache.spark.util.GarbageCollectionMetrics").setLevel(logging.ERROR)
 
+def _detect_docker_env():
+    """
+    Detect if running inside a Docker container (Jupyter or Bitnami image).
+    Returns True if inside container, False if on host.
+    """
+    # Common Docker/Jupyter env markers
+    if os.path.exists("/.dockerenv"):
+        return True
+    if os.environ.get("JUPYTER_IMAGE_SPEC") or os.environ.get("JPY_PARENT_PID"):
+        return True
+    # Bitnami image sets BITNAMI_APP_NAME
+    if os.environ.get("BITNAMI_APP_NAME"):
+        return True
+    # Check for typical container hostname pattern
+    try:
+        with open("/proc/1/cgroup", "rt") as f:
+            if "docker" in f.read() or "containerd" in f.read():
+                return True
+    except Exception:
+        pass
+    return False
+
 def get_spark_session(app_name: str = "PySparkApp") -> SparkSession:
     """
     Create and return a SparkSession connected to the cluster defined in docker-compose.yml.
+    Automatically sets the correct Python path for executors based on environment.
     """
     # First, try to stop any existing SparkContext
     try:
@@ -32,7 +56,6 @@ def get_spark_session(app_name: str = "PySparkApp") -> SparkSession:
     # Get host IP that Docker containers can reach
     import subprocess
     try:
-        # Get the host IP address that Docker containers can reach
         result = subprocess.run(['ifconfig', 'en0'], capture_output=True, text=True)
         if result.returncode == 0:
             for line in result.stdout.split('\n'):
@@ -53,16 +76,21 @@ def get_spark_session(app_name: str = "PySparkApp") -> SparkSession:
     os.environ['SPARK_LOG_LEVEL'] = 'ERROR'
     os.environ['HADOOP_USER_NAME'] = 'spark'  # Set Hadoop user to avoid security issues
     
+    # Detect environment and set Python path for executors
+    if _detect_docker_env():
+        python_exec = "/opt/bitnami/python/bin/python3"
+    else:
+        python_exec = sys.executable or "python3"
+
     # Configure Python for executors (use Docker container Python)
-    os.environ['PYSPARK_PYTHON'] = '/opt/bitnami/python/bin/python3'
-    os.environ['PYSPARK_DRIVER_PYTHON'] = 'python3'  # Driver runs on host
+    # os.environ['PYSPARK_PYTHON'] = '/opt/bitnami/python/bin/python3'
+    # os.environ['PYSPARK_DRIVER_PYTHON'] = 'python3'  # Driver runs on host
     
     # Java options (only non-Spark options)
     java_options = [
         "-Dhadoop.native.lib=false",
         "-Dhadoop.home.dir=/dev/null"
     ]
-    
     java_options_str = " ".join(java_options)
     
     return (
@@ -82,10 +110,14 @@ def get_spark_session(app_name: str = "PySparkApp") -> SparkSession:
         .config("spark.sql.adaptive.skewJoin.enabled", "true")
         .config("spark.dynamicAllocation.enabled", "false")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        # Configure Python for executors (auto-detect)
+        .config("spark.pyspark.python", python_exec)
+        .config("spark.pyspark.driver.python", sys.executable or "python3")
+        .config("spark.executorEnv.PYSPARK_PYTHON", python_exec)
         # Configure Python for executors (Docker containers)
-        .config("spark.pyspark.python", "/opt/bitnami/python/bin/python3")
-        .config("spark.pyspark.driver.python", "python3")
-        .config("spark.executorEnv.PYSPARK_PYTHON", "/opt/bitnami/python/bin/python3")
+        # .config("spark.pyspark.python", "/opt/bitnami/python/bin/python3")
+        # .config("spark.pyspark.driver.python", "python3")
+        # .config("spark.executorEnv.PYSPARK_PYTHON", "/opt/bitnami/python/bin/python3")
         # Configure file system to avoid Hadoop native library issues
         .config("spark.hadoop.fs.defaultFS", "file:///")
         .config("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.RawLocalFileSystem")
